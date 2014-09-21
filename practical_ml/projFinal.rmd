@@ -1,0 +1,206 @@
+---
+title: "Practical Machine Learning: Project Write-Up"
+output:
+  html_document:
+    highlight: tango
+    number_sections: yes
+    theme: journal
+    toc: true
+---
+
+# Introduction
+'Human Activity Recognition - HAR - has emerged as a key research area in the last years and is gaining increasing attention by the pervasive computing research community, especially for the development of context-aware systems. There are many potential applications for HAR, like: elderly monitoring, life log systems for monitoring energy expenditure and for supporting weight-loss programs, and digital assistants for weight lifting exercises.' - Quoted from [HAR page][HAR] 
+
+In this project, the aim is to bulid a model to classify the exercise type. The accuracy aim for this project is about 90%. i.e. The out of sample error rate expected is about 10%.
+
+# Methods
+## Data Collection
+The dataset is available from the course webpage for project instructions. This page also points to [Human Activity Recognition page][HAR]. Two data sets are made available; one for training and another for testing. The training data is used for exploratory analysis, training and cross validating models. The testing data is used only for final validation.
+
+## Reproducibilty
+All the code is available in an R markdown file. All computations which involve randomenss are seeded. 
+*To run this code, ensure that the training and testing data (.csv files) are in the right path. Please see below.*
+
+## Exploratory Analysis
+The packages caret and ggplot2 are used for data exploration and model building. 
+```{r}
+library(caret)
+```
+After loading the data;
+```{r}
+trainData <- read.csv(file = "../dataSet/pml-training.csv",header = TRUE) 
+```
+it found that trainData dimension `r dim(trainData)[1]` rows and `r dim(trainData)[2]` columns. A check is done to see how many values are NAs.
+```{r}
+sum(is.na(trainData))
+```
+Since this number is quite high (~ 41% of total data points), the distribution of the NAs per column is examined. This is to determine if the presence of the NAs are more structural or due to noise. The names of columns which have NAs can also be collected. For brevity, this portion of the code is commented out. 
+```{r}
+num_na <- vector()
+#name_vec <- vector()
+for(i in c(1:160)){
+  num_na[i] <- sum(is.na(trainData[,i]))
+#  if(num_na[i] > 0){ 
+#    name_vec[i] <- colnames(trainData)[[i]]
+#  }
+}
+
+hist(num_na, breaks = 500, xlab = "Number of NAs", ylim = c(0,120), ylab = "No of features", main = "Histogram: No of features v/s No of NAs")
+
+```
+
+This plot indicates that there are two types of columns, those which have no data missing missing and those that have `r (num_na[19]/dim(trainData)[1])*100`% of it's entries missing. This indicates that the problem of NAs is structural and not due to noise. Therfore, it better to drop these columns from model building rather than impute for the missing values.
+
+Considering the diagram on [Human Activity Recognition page][HAR] for Weightlifting exercises, using str() on training data set and from basic weight training knowledge; it may be guessed that measurements relating to belt, arm, forearm and dumbbells should be good predictors of the model.
+
+Sample plots of pairs of measurements from sensors on this parts show that it is good direction to take. *Note:* Since these are sample plots, axes have default labels. 
+```{r}
+qplot(roll_belt + pitch_belt, yaw_belt, data = trainData, colour = classe, main = "Roll and pitch of belt: Possible indicator of core stability")
+qplot(roll_arm + pitch_arm, yaw_arm, data = trainData, colour = classe, main = "Roll and pitch of arm: Possible indicator of arm strength")
+```
+
+
+# Model
+Since there is a distinct grouping of values obtained from an exercise type, as by the coloring of points in the graphs above; the kNN (k - Nearest Neighbors) model is chosen for training and prediction. Remeber, the accuracy to obtain is about 90%.
+
+## Preparing Data Set
+* *First:* All columns which have `r num_na[19]` values of the possible `r dim(trainData)[1]` values missing are dropped.
+* *Next:* Of the columns which have all the data, 12 columns are chosen. These are the columns which measured the roll, pitch and yaw of the belt, arm, forearm and dumbbell. 
+* *The idea* is the following: Roll, pitch and yaw together measure how stable or unstable a body is, when moving in a fluid (air). The stability criterion would vary as classes vary. Thus, these measurements taken at these key points should help to predict the exercise class.
+
+Now, create the data subset required from trainData. This is used to train and cross-validate the model. This data set *used_train* will have 12 variables each with 19622 observations. One more variable is the class. The quality of this data is therefore, very good.
+```{r}
+used_train <- trainData[c("roll_belt", "pitch_belt", "yaw_belt",
+                "roll_arm", "pitch_arm", "yaw_arm",
+                "roll_forearm", "pitch_forearm", "yaw_forearm",
+                "roll_dumbbell", "pitch_dumbbell", "yaw_dumbbell", "classe")]
+head(used_train)
+str(used_train)
+```
+
+Set a seed for reproducibility and create training and test sets with a 70/30 split.
+```{r}
+set.seed(300)
+inTrain = createDataPartition(y=used_train$classe, p=0.7, list=FALSE)
+training = trainData[inTrain,]
+testing = trainData[-inTrain,]
+```
+Verify that distribution in percent in the training, testing and original trainData is approximately the same.
+```{r}
+prop.table(table(training$classe)) * 100
+prop.table(table(testing$classe)) * 100
+prop.table(table(trainData$classe)) * 100
+```
+
+## Preprocessing
+kNN requires that predictor data values be normalized. caret provides facility to preprocess data. Choose centring and scaling for pre-processing. *Note:* Omit the classe variable as normalization is only for numeric values!
+```{r}
+trainX <- used_train[,names(used_train) != "classe"]
+#str(trainX)
+preProcValues <- preProcess(x = trainX, method = c("center", "scale"))
+preProcValues
+```
+
+## Training and Classification
+Set a seed and proceed to train the model. The procedure followed here is to add a set of predictors to improve accuracy. Since, core stability is important in weight exercise and core stability can be recorded using the belt, the first model has only roll, ppitch and yaw for belt. The next model accounts for arm measurement then, forearm and finally dumbbell.
+
+In this write-up, repeated cross validation with five repeats is used for train control. Bootstrap and adaptive cross validation was also used. Since both these methods did not improve the accuracy of prediction, in all the models below the "repeatedcv"" method is chosen.
+```{r}
+set.seed(400)
+ctrl <- trainControl(method="repeatedcv",repeats = 5) 
+```
+* Model 1
+```{r}
+knnFit1 <- train(classe ~ roll_belt + pitch_belt + yaw_belt,
+                data = training, method = "knn",  preProcess = c("center","scale")
+                ,trControl = ctrl)
+```
+* Model 2
+```{r}
+knnFit2 <- train(classe ~ roll_belt + pitch_belt + yaw_belt
+                + roll_arm + pitch_arm + yaw_arm,
+                data = training, method = "knn",  preProcess = c("center","scale")
+                ,trControl = ctrl)
+```
+* Model 3
+```{r}
+knnFit3 <- train(classe ~ roll_belt + pitch_belt + yaw_belt
+                + roll_arm + pitch_arm + yaw_arm
+                + roll_forearm + pitch_forearm + yaw_forearm,
+                data = training, method = "knn",  preProcess = c("center","scale")
+                ,trControl = ctrl)
+```
+* Final Model 
+```{r}
+knnFit <- train(classe ~ roll_belt + pitch_belt + yaw_belt
+                + roll_arm + pitch_arm + yaw_arm
+                + roll_forearm + pitch_forearm + yaw_forearm
+                + roll_dumbbell + pitch_dumbbell + yaw_dumbbell,
+                data = training, method = "knn",  preProcess = c("center","scale")
+                ,trControl = ctrl)
+```
+Accuracy and details on the final model. It is seen that the best accuracy is with 5 neighbors.
+```{r}
+knnFit
+plot(knnFit)
+```
+
+## Test Set Results
+Details are presented for the final model predictions only. For others, only the mean accuracy is presented.
+
+* Model 1:
+```{r}
+knnPredict1 <- predict(knnFit1,newdata = testing )
+mean(knnPredict1 == testing$classe)
+```
+
+* Model 2:
+```{r}
+knnPredict2 <- predict(knnFit2,newdata = testing )
+mean(knnPredict2 == testing$classe)
+```
+
+* Model 3:
+```{r}
+knnPredict3 <- predict(knnFit3,newdata = testing )
+mean(knnPredict3 == testing$classe)
+```
+
+* Final Model:
+```{r}
+knnPredict <- predict(knnFit,newdata = testing )
+mean(knnPredict == testing$classe)
+```
+
+Get the confusion matrix to see the table of predictions, accuracy and other error metrics.
+```{r}
+confusionMatrix(knnPredict, testing$classe)
+```
+
+## Validation
+Validation is performed using only the final Model.
+```{r}
+testData <- read.csv(file = "../dataSet/pml-testing.csv",header = TRUE) 
+knnPredict_testdata <- predict(knnFit, newdata = testData )
+
+knnPredict_testdata
+```
+The Project submission indicated that the predictions from the final model are all correct.
+
+# Conclusions
+A k-NN model was built using only 12 (of possible 160) features. The model achieved `r mean(knnPredict == testing$classe)*100`% accuracy. The target of about 90% accuracy was achieved. It achieved 100% accuracy on the (provided) validation data set, therefore it has and can perform admirably.
+
+The idea to use the pitch, roll and yaw measurements for four key points to identify the class worked well. However, there a tacit assumption that the persons who performed these exercises have similar muscular strength and motion. This need not be so and would introduce errors.
+
+Going further, it should be possible to improve the mean accuracy by including more features (there are 71 more features with all data points available). However, prior to selecting these features, it would be advisable to perform PCA (Principal Component Analysis) to rule out redundant features.
+
+# References
+1. Practical Machine Learning (Coursera Course: Lectures and Slides): Jeff Leek, PhD, Roger D. Peng, PhD, Brian Caffo, PhD.
+2. Qualitative Activity Recognition of Weight Lifting Exercises: Velloso, E.; Bulling, A.;   Gellersen, H.; Ugulino, W.; Fuks, H.
+3. [Imputation_(Statistics)][WIKI1] 
+4. A Short Introduction to caret package: Max Kuhn.
+5. The Elements of Statistical Learning: T Hastie, R. Tibshirani and J. Friedman
+6. [Human Activity Recognition][HAR]
+
+[HAR]: http://groupware.les.inf.puc-rio.br/har
+[WIKI1]: http://en.wikipedia.org/wiki/Imputation_%28statistics%29
